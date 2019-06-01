@@ -1,14 +1,19 @@
+'use strict';
+
 const tls = require('tls');
-const util = require('util');
-const utils = require('./lib/utils');
-const Command = require('./lib/command');
-const Queue = require('denque');
-const errorClasses = require('./lib/customErrors');
-const EventEmitter = require('events');
+const net = require('net');
+
 const Parser = require('redis-parser');
 const commands = require('redis-commands');
-const debug = require('./lib/debug');
+
+const EventEmitter = require('events');
+const Queue = require('denque');
+
+const utils = require('./lib/utils');
+const Command = require('./lib/command');
+const errorClasses = require('./lib/customErrors');
 const unifyOptions = require('./lib/createClient');
+const debug = require('./lib/debug');
 
 const SUBSCRIBE_COMMANDS = {
     subscribe: true,
@@ -17,8 +22,7 @@ const SUBSCRIBE_COMMANDS = {
     punsubscribe: true
 };
 
-function noop () {
-}
+const noop = () => {};
 
 function handle_detect_buffers_reply (reply, command, buffer_args) {
     if (buffer_args === false || this.message_buffers) {
@@ -30,14 +34,15 @@ function handle_detect_buffers_reply (reply, command, buffer_args) {
     if (command === 'hgetall') {
         reply = utils.reply_to_object(reply);
     }
+
     return reply;
 }
 
 const deferredPromise = () => {
-    let resolve;
-    let reject;
+    let resolve = null;
+    let reject = null;
 
-    let promise = new Promise((res, rej) => {
+    const promise = new Promise((res, rej) => {
         resolve = res;
         reject = rej;
     });
@@ -833,6 +838,7 @@ class RedisClient extends EventEmitter {
                     'This is converted to "${args[i].toString()}" by using .toString() now and will return an error from v.3.0 on.\n' +
                     'Please handle this in your code to make sure everything works as you intended it to.'
                 );
+
                 args_copy[i] = args[i].toString(); // Backwards compatible :/
 
                 continue;
@@ -844,6 +850,7 @@ class RedisClient extends EventEmitter {
                     'This is converted to a "undefined" string now and will return an error from v.3.0 on.\n' +
                     'Please handle this in your code to make sure everything works as you intended it to.'
                 );
+
                 args_copy[i] = 'undefined'; // Backwards compatible :/
 
                 continue;
@@ -1014,6 +1021,7 @@ function create_parser (self) {
             // Note: the execution order is important. First flush and emit, then create the stream
             err.message += '. Please report this.';
             self.ready = false;
+
             self.flush_and_error({
                 message: 'Fatal error encountered. Command aborted.',
                 code: 'NR_FATAL'
@@ -1021,6 +1029,7 @@ function create_parser (self) {
                 error: err,
                 queues: ['command_queue']
             });
+
             self.emit('error', err);
             self.create_stream();
         },
@@ -1041,6 +1050,7 @@ const retry_connection = (self, error) => {
         attempt: self.attempts,
         error
     };
+
     if (self.options.camel_case) {
         reconnect_params.totalRetryTime = self.retry_totaltime;
         reconnect_params.timesConnected = self.times_connected;
@@ -1048,6 +1058,7 @@ const retry_connection = (self, error) => {
         reconnect_params.total_retry_time = self.retry_totaltime;
         reconnect_params.times_connected = self.times_connected;
     }
+
     self.emit('reconnecting', reconnect_params);
 
     self.retry_totaltime += self.retry_delay;
@@ -1076,11 +1087,13 @@ function subscribe_unsubscribe (self, reply, type) {
     const buffer = self.options.return_buffers || self.options.detect_buffers && command_obj.buffer_args;
     const channel = (buffer || reply[1] === null) ? reply[1] : reply[1].toString();
     const count = +reply[2]; // Return the channel counter as number no matter if `string_numbers` is activated or not
+
     debug(type, channel);
 
     // Emit first, then return the callback
     if (channel !== null) { // Do not emit or "unsubscribe" something if there was no channel to unsubscribe from
         self.emit(type, channel, count);
+
         if (type === 'subscribe' || type === 'psubscribe') {
             self.subscription_set[`${type}_${channel}`] = channel;
         } else {
@@ -1093,29 +1106,37 @@ function subscribe_unsubscribe (self, reply, type) {
         if (count === 0) { // unsubscribed from all channels
             let running_command;
             let i = 1;
+
             self.pub_sub_mode = 0; // Deactivating pub sub mode
+
             // This should be a rare case and therefore handling it this way should be good performance wise for the general case
             while (running_command = self.command_queue.get(i)) {
                 if (SUBSCRIBE_COMMANDS[running_command.command]) {
                     self.pub_sub_mode = i; // Entering pub sub mode again
                     break;
                 }
+
                 i++;
             }
         }
+
         self.command_queue.shift();
+
         if (typeof command_obj.callback === 'function') {
             // TODO: The current return value is pretty useless.
             // Evaluate to change this in v.3 to return all subscribed / unsubscribed channels in an array including the number of channels subscribed too
             command_obj.callback(null, channel);
         }
+
         self.sub_commands_left = 0;
+
+        return;
+    }
+
+    if (self.sub_commands_left !== 0) {
+        self.sub_commands_left--;
     } else {
-        if (self.sub_commands_left !== 0) {
-            self.sub_commands_left--;
-        } else {
-            self.sub_commands_left = command_obj.args.length ? command_obj.args.length - 1 : count;
-        }
+        self.sub_commands_left = command_obj.args.length ? command_obj.args.length - 1 : count;
     }
 }
 
@@ -1129,7 +1150,11 @@ function return_pub_sub (self, reply) {
         } else {
             self.emit('message', reply[1], reply[2]);
         }
-    } else if (type === 'pmessage') { // pattern, channel, message
+
+        return;
+    }
+
+    if (type === 'pmessage') { // pattern, channel, message
         if (!self.options.return_buffers || self.message_buffers) { // backwards compatible. Refactor this in v.3 to always return a string on the normal emitter
             self.emit('pmessage', reply[1].toString(), reply[2].toString(), reply[3].toString());
             self.emit('pmessage_buffer', reply[1], reply[2], reply[3]);
@@ -1137,18 +1162,22 @@ function return_pub_sub (self, reply) {
         } else {
             self.emit('pmessage', reply[1], reply[2], reply[3]);
         }
-    } else {
-        subscribe_unsubscribe(self, reply, type);
+
+        return;
     }
+
+    subscribe_unsubscribe(self, reply, type);
 }
 
 function handle_offline_command (self, command_obj) {
     let command = command_obj.command;
+
     let err;
     let msg;
 
     if (self.closing || !self.enable_offline_queue) {
         command = command.toUpperCase();
+
         if (!self.closing) {
             if (self.stream.writable) {
                 msg = 'The connection is not yet established and the offline queue is deactivated.';
@@ -1158,19 +1187,24 @@ function handle_offline_command (self, command_obj) {
         } else {
             msg = 'The connection is already closed.';
         }
+
         err = new errorClasses.AbortError({
             message: `${command} can't be processed. ${msg}`,
             code: 'NR_CLOSED',
             command
         });
+
         if (command_obj.args.length) {
             err.args = command_obj.args;
         }
+
         utils.reply_in_order(self, command_obj.callback, err);
-    } else {
-        debug(`Queueing ${command} for next server connection.`);
-        self.offline_queue.push(command_obj);
+
+        return;
     }
+
+    debug(`Queueing ${command} for next server connection.`);
+    self.offline_queue.push(command_obj);
 
     self.should_buffer = true;
 }
